@@ -1,0 +1,176 @@
+version: '3'
+
+networks:
+  frontend:
+    driver: ${NETWORKS_DRIVER}
+  backend:
+    driver: ${NETWORKS_DRIVER}
+volumes:
+  mysql:
+    driver: ${VOLUMES_DRIVER}
+  redis:
+    driver: ${VOLUMES_DRIVER}
+  mariadb:
+    driver: ${VOLUMES_DRIVER}
+  phpmyadmin:
+    driver: ${VOLUMES_DRIVER}
+
+services:
+### MySQL ################################################
+    mysql:
+      build:
+        context: ./mysql
+        args:
+          - MYSQL_VERSION=${MYSQL_VERSION}
+      environment:
+        - MYSQL_DATABASE=${MYSQL_DATABASE}
+        - MYSQL_USER=${MYSQL_USER}
+        - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+        - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+        - TZ=${WORKSPACE_TIMEZONE}
+      volumes:
+        - ${DATA_PATH_HOST}/mysql:/var/lib/mysql
+        - ${MYSQL_ENTRYPOINT_INITDB}:/docker-entrypoint-initdb.d
+      ports:
+        - "${MYSQL_PORT}:3306"
+      networks:
+        - backend
+
+### MariaDB ##############################################
+    mariadb:
+      build:
+        context: ./mariadb
+        args:
+          - http_proxy
+          - https_proxy
+          - no_proxy
+      volumes:
+        - ${DATA_PATH_HOST}/mariadb:/var/lib/mysql
+        - ${MARIADB_ENTRYPOINT_INITDB}:/docker-entrypoint-initdb.d
+      ports:
+        - "${MARIADB_PORT}:3306"
+      environment:
+        - TZ=${WORKSPACE_TIMEZONE}
+        - MYSQL_DATABASE=${MARIADB_DATABASE}
+        - MYSQL_USER=${MARIADB_USER}
+        - MYSQL_PASSWORD=${MARIADB_PASSWORD}
+        - MYSQL_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
+      networks:
+        - backend
+      command:
+        'mysqld --innodb-flush-method=littlesync --innodb-use-native-aio=OFF --log_bin=ON'
+
+### Redis ################################################
+    redis:
+      build: ./redis
+      volumes:
+        - ${DATA_PATH_HOST}/redis:/data
+      ports:
+        - "${REDIS_PORT}:6379"
+      networks:
+        - backend
+
+### RabbitMQ #############################################
+    rabbitmq:
+      build: ./rabbitmq
+      ports:
+        - "${RABBITMQ_NODE_HOST_PORT}:5672"
+        - "${RABBITMQ_MANAGEMENT_HTTP_HOST_PORT}:15672"
+        - "${RABBITMQ_MANAGEMENT_HTTPS_HOST_PORT}:15671"
+      privileged: true
+      environment:
+        - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+        - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      hostname: laradock-rabbitmq
+      volumes:
+        - ${DATA_PATH_HOST}/rabbitmq:/var/lib/rabbitmq
+      networks:
+        - backend
+
+### phpMyAdmin ###########################################
+    phpmyadmin:
+      build: ./phpmyadmin
+      environment:
+        - PMA_ARBITRARY=1
+        - MYSQL_USER=${PMA_USER}
+        - MYSQL_PASSWORD=${PMA_PASSWORD}
+        - MYSQL_ROOT_PASSWORD=${PMA_ROOT_PASSWORD}
+      ports:
+        - "${PMA_PORT}:80"
+      depends_on:
+        - "${PMA_DB_ENGINE}"
+      networks:
+        - frontend
+        - backend
+### Certbot #########################################
+    certbot:
+      build:
+        context: ./certbot
+      volumes:
+        - ./data/certbot/certs/:/var/certs
+        - ./certbot/letsencrypt/:/var/www/letsencrypt
+      environment:
+        - CN="fake.domain.com"
+        - EMAIL="fake.email@gmail.com"
+      networks:
+        - frontend
+### Portainer ################################################
+    portainer:
+      build:
+        context: ./portainer
+      volumes:
+        - ${DATA_PATH_HOST}/portainer_data:/data
+        - /var/run/docker.sock:/var/run/docker.sock
+      extra_hosts:
+        - "dockerhost:${DOCKER_HOST_IP}"
+      ports:
+        - 9010:9000
+      networks:
+        - backend
+
+### Docker-in-Docker ################################################
+    docker-in-docker:
+      image: docker:dind
+      privileged: true
+      volumes:
+        - ${APP_CODE_PATH_HOST}:${APP_CODE_PATH_CONTAINER}
+      expose:
+        - 2375
+      networks:
+        - backend
+
+### DOCKER-REGISTRY ################################################
+    docker-registry:
+      build:
+        context: ./docker-registry
+      volumes:
+        - /etc/localtime:/etc/localtime:ro
+        - ${DATA_PATH_HOST}/docker-registry:/var/lib/registry
+      ports:
+        - "${DOCKER_REGISTRY_PORT}:5000"
+      networks:
+        - backend
+
+### NGINX Server #########################################
+    nginx:
+      build:
+        context: ./nginx
+        args:
+          - CHANGE_SOURCE=${CHANGE_SOURCE}
+          - http_proxy
+          - https_proxy
+          - no_proxy
+      volumes:
+        - ${APP_CODE_PATH_HOST}:${APP_CODE_PATH_CONTAINER}${APP_CODE_CONTAINER_FLAG}
+        - ${NGINX_HOST_LOG_PATH}:/var/log/nginx
+        - ${NGINX_SITES_PATH}:/etc/nginx/sites-available
+        - ${NGINX_SSL_PATH}:/etc/nginx/ssl
+      ports:
+        - "${NGINX_HOST_HTTP_PORT}:80"
+        - "${NGINX_HOST_HTTPS_PORT}:443"
+      environment:
+        - TZ=${WORKSPACE_TIMEZONE}
+        - php-fpm
+      networks:
+        - frontend
+        - backend
